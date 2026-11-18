@@ -1,0 +1,25 @@
+[Unit]
+# Service systemd pour le bot One Piece Discord
+# Permet de le faire tourner H24 en arrière-plan, avec redémarrage
+# automatique en cas de crash, et démarrage automatique au boot du serveur.
+Description=One Piece Economy Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adapte "ubuntu" si ton utilisateur système a un autre nom
+User=ubuntu
+WorkingDirectory=/home/ubuntu/onepiece-bot
+ExecStart=/home/ubuntu/onepiece-bot/venv/bin/python3 /home/ubuntu/onepiece-bot/bot.py
+
+# Redémarre automatiquement le bot s'il crashe (ex: perte réseau temporaire)
+Restart=on-failure
+RestartSec=10
+
+# Envoie les logs du bot vers journalctl (consultables avec `journalctl -u onepiece-bot`)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
