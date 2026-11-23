@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import database as db
+from utils.ryukai_card import generate_ryukai_card_sync
 
 
 MATCH_TYPES = [
@@ -23,10 +24,10 @@ def member_ids_from_mentions(raw: str) -> list[int]:
 
 
 class WarProfiles(commands.Cog):
-    """Regroupe les commandes de war sous /war afin de garder les racines propres."""
+    """Regroupe les commandes RYUKAI sous /wars afin de garder les racines propres."""
 
-    war = app_commands.Group(
-        name="war",
+    wars = app_commands.Group(
+        name="wars",
         description="Profils RYUKAI et enregistrement des résultats de war.",
         guild_only=True,
     )
@@ -34,7 +35,17 @@ class WarProfiles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @war.command(name="profile-config", description="[Staff] Configure les informations RYUKAI d'un membre.")
+    @wars.command(name="profile", description="Affiche la carte RYUKAI d'un membre.")
+    @app_commands.describe(membre="Membre dont tu veux voir la carte (optionnel)")
+    async def profile(self, interaction: discord.Interaction, membre: discord.Member | None = None):
+        target = membre or interaction.user
+        profile = await db.get_ryukai_profile(target.id, interaction.guild_id)
+        await interaction.response.defer()
+        avatar_bytes = await target.display_avatar.replace(size=256, format="png").read()
+        card = generate_ryukai_card_sync(avatar_bytes, target.display_name, profile)
+        await interaction.followup.send(file=discord.File(card, filename="ryukai_profile.png"))
+
+    @wars.command(name="config", description="[Staff] Configure les informations RYUKAI d'un membre.")
     @app_commands.describe(
         membre="Membre dont la carte doit être configurée",
         team="Ex. S, Alpha, RYUKAI",
@@ -44,7 +55,7 @@ class WarProfiles(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.default_permissions(manage_guild=True)
-    async def profile_config(
+    async def config(
         self,
         interaction: discord.Interaction,
         membre: discord.Member,
@@ -69,7 +80,7 @@ class WarProfiles(commands.Cog):
             ephemeral=True,
         )
 
-    @war.command(name="result", description="[Staff] Enregistre un résultat et crédite chaque participant.")
+    @wars.command(name="result", description="[Staff] Enregistre un résultat et crédite chaque participant.")
     @app_commands.describe(
         type="Catégorie du match",
         gagnants="Mentions ou IDs des gagnants, séparés par des espaces ou virgules",
