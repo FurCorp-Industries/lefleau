@@ -474,6 +474,57 @@ CREATE TABLE IF NOT EXISTS reaction_role_mappings (
 );
 """
 
+# --- Profils et résultats RYUKAI ---
+# Les informations de profil sont propres à chaque serveur : un même membre
+# peut jouer dans des équipes différentes selon la communauté.
+CREATE_RYUKAI_PROFILES_TABLE = """
+CREATE TABLE IF NOT EXISTS ryukai_profiles (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    team TEXT NOT NULL DEFAULT '—',
+    rank_name TEXT NOT NULL DEFAULT '—',
+    platform TEXT NOT NULL DEFAULT 'PC / CONSOLE',
+    region TEXT NOT NULL DEFAULT '—',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
+"""
+
+CREATE_RYUKAI_STATS_TABLE = """
+CREATE TABLE IF NOT EXISTS ryukai_stats (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    war_wins INTEGER NOT NULL DEFAULT 0 CHECK(war_wins >= 0),
+    war_losses INTEGER NOT NULL DEFAULT 0 CHECK(war_losses >= 0),
+    pub_war_wins INTEGER NOT NULL DEFAULT 0 CHECK(pub_war_wins >= 0),
+    pub_war_losses INTEGER NOT NULL DEFAULT 0 CHECK(pub_war_losses >= 0),
+    duel_wins INTEGER NOT NULL DEFAULT 0 CHECK(duel_wins >= 0),
+    duel_losses INTEGER NOT NULL DEFAULT 0 CHECK(duel_losses >= 0),
+    PRIMARY KEY (guild_id, user_id)
+);
+"""
+
+CREATE_RYUKAI_WAR_RESULTS_TABLE = """
+CREATE TABLE IF NOT EXISTS ryukai_war_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    match_type TEXT NOT NULL CHECK(match_type IN ('war', 'pub_war', 'duel')),
+    recorded_by INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT ''
+);
+"""
+
+CREATE_RYUKAI_WAR_PARTICIPANTS_TABLE = """
+CREATE TABLE IF NOT EXISTS ryukai_war_participants (
+    result_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('win', 'loss')),
+    PRIMARY KEY (result_id, user_id),
+    FOREIGN KEY (result_id) REFERENCES ryukai_war_results(id) ON DELETE CASCADE
+);
+"""
+
 async def _column_exists(db, table: str, column: str) -> bool:
     cursor = await db.execute(f"PRAGMA table_info({table})")
     columns = [row[1] for row in await cursor.fetchall()]
@@ -517,6 +568,10 @@ async def init_db():
         await db.execute(CREATE_PANEL_MESSAGES_TABLE)
         await db.execute(CREATE_REACTION_ROLE_PANELS_TABLE)
         await db.execute(CREATE_REACTION_ROLE_MAPPINGS_TABLE)
+        await db.execute(CREATE_RYUKAI_PROFILES_TABLE)
+        await db.execute(CREATE_RYUKAI_STATS_TABLE)
+        await db.execute(CREATE_RYUKAI_WAR_RESULTS_TABLE)
+        await db.execute(CREATE_RYUKAI_WAR_PARTICIPANTS_TABLE)
         await db.execute(CREATE_CUSTOM_SHOP_ITEMS_TABLE)
         await db.execute(CREATE_CUSTOM_INVENTORY_TABLE)
         await db.execute(CREATE_GLOBAL_BLACKLIST_TABLE)
@@ -582,6 +637,10 @@ async def init_db():
         await db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_giveaway_proposal_pending_ticket "
             "ON giveaway_proposals(ticket_channel_id) WHERE status = 'pending'"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ryukai_results_guild_created "
+            "ON ryukai_war_results(guild_id, recorded_at DESC)"
         )
         await db.execute("PRAGMA optimize")
         await db.commit()
@@ -2780,3 +2839,123 @@ async def delete_reaction_role_panel(guild_id: int, message_id: int) -> bool:
                                     (guild_id, message_id))
         await conn.commit()
         return cursor.rowcount > 0
+
+
+# --- RYUKAI : profils de war et historique des résultats ---
+
+_RYUKAI_STAT_COLUMNS = {
+    "war": ("war_wins", "war_losses"),
+    "pub_war": ("pub_war_wins", "pub_war_losses"),
+    "duel": ("duel_wins", "duel_losses"),
+}
+
+
+async def get_ryukai_profile(user_id: int, guild_id: int) -> dict:
+    """Retourne les métadonnées et statistiques RYUKAI d'un membre.
+
+    Aucun profil explicite n'est requis : des valeurs par défaut permettent à
+    ``/profile`` de fonctionner pour tous les membres dès le déploiement.
+    """
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute(
+            "INSERT OR IGNORE INTO ryukai_profiles "
+            "(guild_id, user_id, updated_at) VALUES (?, ?, ?)",
+            (guild_id, user_id, _now_iso()),
+        )
+        await conn.execute(
+            "INSERT OR IGNORE INTO ryukai_stats (guild_id, user_id) VALUES (?, ?)",
+            (guild_id, user_id),
+        )
+        await conn.commit()
+        row = await (await conn.execute(
+            "SELECT p.team, p.rank_name, p.platform, p.region, "
+            "s.war_wins, s.war_losses, s.pub_war_wins, s.pub_war_losses, "
+            "s.duel_wins, s.duel_losses "
+            "FROM ryukai_profiles p JOIN ryukai_stats s "
+            "ON p.guild_id = s.guild_id AND p.user_id = s.user_id "
+            "WHERE p.guild_id = ? AND p.user_id = ?",
+            (guild_id, user_id),
+        )).fetchone()
+        return dict(row)
+
+
+async def set_ryukai_profile(
+    user_id: int,
+    guild_id: int,
+    team: str,
+    rank_name: str,
+    platform: str,
+    region: str,
+) -> None:
+    """Crée ou met à jour les informations affichées sur la carte RYUKAI."""
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO ryukai_profiles "
+            "(guild_id, user_id, team, rank_name, platform, region, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET "
+            "team=excluded.team, rank_name=excluded.rank_name, "
+            "platform=excluded.platform, region=excluded.region, "
+            "updated_at=excluded.updated_at",
+            (guild_id, user_id, team, rank_name, platform, region, _now_iso()),
+        )
+        await conn.execute(
+            "INSERT OR IGNORE INTO ryukai_stats (guild_id, user_id) VALUES (?, ?)",
+            (guild_id, user_id),
+        )
+        await conn.commit()
+
+
+async def record_ryukai_result(
+    guild_id: int,
+    match_type: str,
+    winner_ids: list[int],
+    loser_ids: list[int],
+    recorded_by: int,
+    note: str = "",
+) -> int:
+    """Enregistre un résultat et incrémente chaque participant atomiquement.
+
+    Les identifiants du gagnant et du perdant doivent être disjoints. Le
+    résultat renvoyé est l'identifiant historique utilisable pour l'audit.
+    """
+    if match_type not in _RYUKAI_STAT_COLUMNS:
+        raise ValueError("Type de match RYUKAI invalide.")
+    winners, losers = set(winner_ids), set(loser_ids)
+    if not winners or not losers or winners & losers:
+        raise ValueError("Les équipes gagnante et perdante doivent être non vides et distinctes.")
+
+    win_column, loss_column = _RYUKAI_STAT_COLUMNS[match_type]
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await conn.execute("BEGIN IMMEDIATE")
+        cursor = await conn.execute(
+            "INSERT INTO ryukai_war_results "
+            "(guild_id, match_type, recorded_by, recorded_at, note) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, match_type, recorded_by, _now_iso(), note),
+        )
+        result_id = cursor.lastrowid
+        participants = [(result_id, user_id, "win") for user_id in sorted(winners)]
+        participants += [(result_id, user_id, "loss") for user_id in sorted(losers)]
+        await conn.executemany(
+            "INSERT INTO ryukai_war_participants (result_id, user_id, outcome) VALUES (?, ?, ?)",
+            participants,
+        )
+        for user_id in winners | losers:
+            await conn.execute(
+                "INSERT OR IGNORE INTO ryukai_stats (guild_id, user_id) VALUES (?, ?)",
+                (guild_id, user_id),
+            )
+        await conn.executemany(
+            f"UPDATE ryukai_stats SET {win_column} = {win_column} + 1 "
+            "WHERE guild_id = ? AND user_id = ?",
+            [(guild_id, user_id) for user_id in winners],
+        )
+        await conn.executemany(
+            f"UPDATE ryukai_stats SET {loss_column} = {loss_column} + 1 "
+            "WHERE guild_id = ? AND user_id = ?",
+            [(guild_id, user_id) for user_id in losers],
+        )
+        await conn.commit()
+        return result_id
