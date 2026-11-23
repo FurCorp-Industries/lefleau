@@ -50,3 +50,12 @@ class RyukaiDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await db.record_ryukai_result(20, "war", [10], [10], 99)
 
+    async def test_access_roles_are_unique_and_can_be_removed(self):
+        self.assertTrue(await db.add_ryukai_access_role(20, 500, 99))
+        self.assertFalse(await db.add_ryukai_access_role(20, 500, 99))
+        self.assertTrue(await db.add_ryukai_access_role(20, 501, 99))
+        self.assertEqual(await db.list_ryukai_access_roles(20), [500, 501])
+        self.assertTrue(await db.remove_ryukai_access_role(20, 500))
+        self.assertFalse(await db.remove_ryukai_access_role(20, 500))
+        self.assertEqual(await db.list_ryukai_access_roles(20), [501])
+

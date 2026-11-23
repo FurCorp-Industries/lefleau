@@ -525,6 +525,16 @@ CREATE TABLE IF NOT EXISTS ryukai_war_participants (
 );
 """
 
+CREATE_RYUKAI_ACCESS_ROLES_TABLE = """
+CREATE TABLE IF NOT EXISTS ryukai_access_roles (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    added_by INTEGER NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+"""
+
 async def _column_exists(db, table: str, column: str) -> bool:
     cursor = await db.execute(f"PRAGMA table_info({table})")
     columns = [row[1] for row in await cursor.fetchall()]
@@ -572,6 +582,7 @@ async def init_db():
         await db.execute(CREATE_RYUKAI_STATS_TABLE)
         await db.execute(CREATE_RYUKAI_WAR_RESULTS_TABLE)
         await db.execute(CREATE_RYUKAI_WAR_PARTICIPANTS_TABLE)
+        await db.execute(CREATE_RYUKAI_ACCESS_ROLES_TABLE)
         await db.execute(CREATE_CUSTOM_SHOP_ITEMS_TABLE)
         await db.execute(CREATE_CUSTOM_INVENTORY_TABLE)
         await db.execute(CREATE_GLOBAL_BLACKLIST_TABLE)
@@ -2959,3 +2970,36 @@ async def record_ryukai_result(
         )
         await conn.commit()
         return result_id
+
+
+async def list_ryukai_access_roles(guild_id: int) -> list[int]:
+    """Retourne les rôles autorisés à utiliser les commandes RYUKAI."""
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        rows = await (await conn.execute(
+            "SELECT role_id FROM ryukai_access_roles WHERE guild_id = ? ORDER BY role_id",
+            (guild_id,),
+        )).fetchall()
+        return [row[0] for row in rows]
+
+
+async def add_ryukai_access_role(guild_id: int, role_id: int, added_by: int) -> bool:
+    """Ajoute un rôle à la liste d'accès. Renvoie False s'il existait déjà."""
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        cursor = await conn.execute(
+            "INSERT OR IGNORE INTO ryukai_access_roles "
+            "(guild_id, role_id, added_by, added_at) VALUES (?, ?, ?, ?)",
+            (guild_id, role_id, added_by, _now_iso()),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def remove_ryukai_access_role(guild_id: int, role_id: int) -> bool:
+    """Retire un rôle de la liste d'accès RYUKAI."""
+    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM ryukai_access_roles WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
