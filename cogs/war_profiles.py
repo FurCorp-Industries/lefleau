@@ -1,0 +1,150 @@
+"""Commandes RYUKAI : profils compétitifs et enregistrement des wars."""
+
+import re
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+import database as db
+
+
+MATCH_TYPES = [
+    app_commands.Choice(name="War", value="war"),
+    app_commands.Choice(name="Pub War", value="pub_war"),
+    app_commands.Choice(name="1v1", value="duel"),
+]
+MATCH_LABELS = {"war": "War", "pub_war": "Pub War", "duel": "1v1"}
+
+
+def member_ids_from_mentions(raw: str) -> list[int]:
+    """Extrait les mentions ou IDs Discord séparés par des espaces/virgules."""
+    return list(dict.fromkeys(int(value) for value in re.findall(r"\d{15,22}", raw)))
+
+
+class WarProfiles(commands.Cog):
+    """Regroupe les commandes de war sous /war afin de garder les racines propres."""
+
+    war = app_commands.Group(
+        name="war",
+        description="Profils RYUKAI et enregistrement des résultats de war.",
+        guild_only=True,
+    )
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @war.command(name="profile-config", description="[Staff] Configure les informations RYUKAI d'un membre.")
+    @app_commands.describe(
+        membre="Membre dont la carte doit être configurée",
+        team="Ex. S, Alpha, RYUKAI",
+        rank="Ex. Fighter, Leader",
+        platform="Ex. PC / Console",
+        region="Ex. FR, EU, NA",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_guild=True)
+    async def profile_config(
+        self,
+        interaction: discord.Interaction,
+        membre: discord.Member,
+        team: str,
+        rank: str,
+        platform: str,
+        region: str,
+    ):
+        values = (team, rank, platform, region)
+        if any(not value.strip() or len(value) > 32 for value in values):
+            await interaction.response.send_message(
+                "Chaque champ doit contenir entre 1 et 32 caractères.", ephemeral=True
+            )
+            return
+        await db.set_ryukai_profile(
+            membre.id, interaction.guild_id,
+            team.strip(), rank.strip(), platform.strip(), region.strip(),
+        )
+        await interaction.response.send_message(
+            f"Carte RYUKAI de {membre.mention} mise à jour : "
+            f"**{team.strip()} · {rank.strip()} · {platform.strip()} · {region.strip()}**.",
+            ephemeral=True,
+        )
+
+    @war.command(name="result", description="[Staff] Enregistre un résultat et crédite chaque participant.")
+    @app_commands.describe(
+        type="Catégorie du match",
+        gagnants="Mentions ou IDs des gagnants, séparés par des espaces ou virgules",
+        perdants="Mentions ou IDs des perdants, séparés par des espaces ou virgules",
+        note="Contexte facultatif (adversaire, score, etc.)",
+    )
+    @app_commands.choices(type=MATCH_TYPES)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_guild=True)
+    async def result(
+        self,
+        interaction: discord.Interaction,
+        type: app_commands.Choice[str],
+        gagnants: str,
+        perdants: str,
+        note: str = "",
+    ):
+        winner_ids = member_ids_from_mentions(gagnants)
+        loser_ids = member_ids_from_mentions(perdants)
+        if not winner_ids or not loser_ids:
+            await interaction.response.send_message(
+                "Indique au moins un gagnant et un perdant avec leurs mentions ou IDs Discord.",
+                ephemeral=True,
+            )
+            return
+        if set(winner_ids) & set(loser_ids):
+            await interaction.response.send_message(
+                "Un membre ne peut pas être à la fois gagnant et perdant.", ephemeral=True
+            )
+            return
+        if type.value == "duel" and (len(winner_ids) != 1 or len(loser_ids) != 1):
+            await interaction.response.send_message(
+                "Un résultat **1v1** doit contenir exactement un gagnant et un perdant.", ephemeral=True
+            )
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            return
+        unknown_ids = [member_id for member_id in winner_ids + loser_ids if guild.get_member(member_id) is None]
+        if unknown_ids:
+            listed = ", ".join(str(member_id) for member_id in unknown_ids)
+            await interaction.response.send_message(
+                f"Membre introuvable sur ce serveur : `{listed}`.", ephemeral=True
+            )
+            return
+
+        result_id = await db.record_ryukai_result(
+            guild.id, type.value, winner_ids, loser_ids, interaction.user.id, note.strip()[:300]
+        )
+        winner_mentions = " ".join(f"<@{member_id}>" for member_id in winner_ids)
+        loser_mentions = " ".join(f"<@{member_id}>" for member_id in loser_ids)
+        description = f"🏆 **Gagnants :** {winner_mentions}\n💢 **Défaites :** {loser_mentions}"
+        if note.strip():
+            description += f"\n📝 {note.strip()[:300]}"
+        embed = discord.Embed(
+            title=f"RYUKAI — {MATCH_LABELS[type.value]} enregistré",
+            description=description,
+            color=0xE952B9,
+        )
+        embed.set_footer(text=f"Résultat #{result_id} · enregistré par {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            message = "Permission **Gérer le serveur** requise."
+        else:
+            message = "Impossible d'enregistrer ce résultat. Réessaie ou contacte un administrateur."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(WarProfiles(bot))

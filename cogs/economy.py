@@ -13,16 +13,13 @@ from discord.ext import commands
 
 import config
 import database as db
-from data.fruits import FRUITS
 from utils.helpers import (
     format_berrys,
     format_duration,
-    get_bounty_title,
     get_fruits_effect_value,
     get_equipped_fruits_and_levels,
-    get_member_fleet,
 )
-from utils.image_gen import generate_wanted_poster
+from utils.ryukai_card import generate_ryukai_card_sync
 
 
 class ResetConfirmView(discord.ui.View):
@@ -282,58 +279,18 @@ class Economy(commands.Cog):
     # ------------------------------------------------------------------
     # /profile
     # ------------------------------------------------------------------
-    @app_commands.command(name="profile", description="Affiche ton profil de pirate complet.")
+    @app_commands.command(name="profile", description="Affiche la carte RYUKAI d'un membre.")
     @app_commands.describe(member="Le membre dont tu veux voir le profil (optionnel)")
     async def profile(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
-        user = await db.get_user(target.id, interaction.guild_id)
+        profile = await db.get_ryukai_profile(target.id, interaction.guild_id)
 
-        equipped_fruits, fruit_levels = await get_equipped_fruits_and_levels(target.id, interaction.guild_id)
-        has_passive = await db.has_multi_fruit_passive(target.id, interaction.guild_id)
-
-        if not equipped_fruits:
-            fruit_text = "Aucun fruit équipé — un simple humain (pour l'instant)."
-        else:
-            lines = []
-            for fruit_id in equipped_fruits:
-                fruit = FRUITS.get(fruit_id)
-                if not fruit:
-                    continue
-                level = fruit_levels.get(fruit_id, 1)
-                stars = "⭐" * level
-                lines.append(
-                    f"{fruit['emoji']} **{fruit['name']}** ({fruit['type']}) — Niveau {level} {stars}\n"
-                    f"_{fruit['bonus_text']}_"
-                )
-            fruit_text = "\n\n".join(lines)
-            if has_passive:
-                fruit_text += "\n\n🖤 **Passif Barbe Noire actif** — tous ces bonus se cumulent !"
-
-        title = get_bounty_title(user["bounty"])
-        fleet = get_member_fleet(target)
-        fleet_and_title = f"{fleet} | {title}" if fleet else title
-
-        await interaction.response.defer()  # la génération de l'affiche prend un instant
-
-        poster_file = await generate_wanted_poster(
-            member=target,
-            fleet_and_title=fleet_and_title,
-            bounty=user["bounty"],
+        await interaction.response.defer()
+        avatar_bytes = await target.display_avatar.replace(size=256, format="png").read()
+        card = generate_ryukai_card_sync(avatar_bytes, target.display_name, profile)
+        await interaction.followup.send(
+            file=discord.File(card, filename="ryukai_profile.png")
         )
-
-        embed = discord.Embed(
-            title=f"🏴‍☠️ Profil de {target.display_name}",
-            description=f"**{fleet_and_title}**",
-            color=config.COLOR_ECONOMY,
-        )
-        embed.add_field(name="💰 Portefeuille", value=format_berrys(user["wallet"]), inline=True)
-        embed.add_field(name="📜 Prime (Bounty)", value=format_berrys(user["bounty"]), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)  # espaceur
-        embed.add_field(name="🍈 Fruit du Démon", value=fruit_text, inline=False)
-        embed.set_image(url="attachment://wanted_poster.png")
-        embed.set_footer(text="Que le Grand Line te soit favorable !")
-
-        await interaction.followup.send(embed=embed, file=poster_file)
 
     # ------------------------------------------------------------------
     # /reset

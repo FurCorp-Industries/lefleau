@@ -46,6 +46,7 @@ INITIAL_EXTENSIONS = [
     "cogs.join_roles",
     "cogs.custom_messages",
     "cogs.reaction_roles",
+    "cogs.war_profiles",
 ]
 
 # --- Intents : on active les intents nécessaires ---
